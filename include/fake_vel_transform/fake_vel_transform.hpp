@@ -27,6 +27,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
 namespace fake_vel_transform
@@ -45,6 +46,10 @@ private:
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void cmdSpinCallback(example_interfaces::msg::Float32::SharedPtr msg);
   void publishTransform();
+  void publishCmdVel();
+  void resetYawCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
   geometry_msgs::msg::Twist transformVelocity(
     const geometry_msgs::msg::Twist::SharedPtr & twist, float yaw_diff);
 
@@ -61,7 +66,9 @@ private:
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr tf_timer_;
+  rclcpp::TimerBase::SharedPtr cmd_vel_timer_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_yaw_service_;
 
   std::string robot_base_frame_;
   std::string fake_robot_base_frame_;
@@ -70,12 +77,18 @@ private:
   std::string cmd_spin_topic_;
   std::string input_cmd_vel_topic_;
   std::string output_cmd_vel_topic_;
+  std::string reset_yaw_service_name_;
+  double cmd_vel_publish_frequency_;
   float spin_speed_;
 
   std::mutex cmd_vel_mutex_;
   geometry_msgs::msg::Twist::SharedPtr latest_cmd_vel_;
+  geometry_msgs::msg::Twist latest_aft_tf_vel_;
   double current_robot_base_angle_;
+  double fake_cumulative_yaw_ = 0.0;    // 存储 Fake 坐标系的当前累积角度
+  rclcpp::Time last_integration_time_;  // 上次积分(激活)的时间点
   rclcpp::Time last_controller_activate_time_;
+  rclcpp::Time last_cmd_vel_update_time_;
 };
 
 }  // namespace fake_vel_transform
