@@ -14,6 +14,8 @@
 
 #include "fake_vel_transform/fake_vel_transform.hpp"
 
+#include <cmath>
+
 #include "tf2/utils.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -22,6 +24,11 @@ namespace fake_vel_transform
 
 constexpr double EPSILON = 1e-5;
 constexpr double CONTROLLER_TIMEOUT = 0.5;
+
+double normalizeAngle(double angle)
+{
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
 
 FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
 : Node("fake_vel_transform", options)
@@ -33,6 +40,7 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("odom_topic", "odom");
   this->declare_parameter<std::string>("local_plan_topic", "local_plan");
   this->declare_parameter<std::string>("cmd_spin_topic", "cmd_spin");
+  this->declare_parameter<std::string>("yaw_feedback_angle_topic", "/target");
   this->declare_parameter<std::string>("input_cmd_vel_topic", "");
   this->declare_parameter<std::string>("output_cmd_vel_topic", "");
   this->declare_parameter<std::string>("reset_yaw_service_name", "reset_fake_yaw");
@@ -44,6 +52,7 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
   this->get_parameter("odom_topic", odom_topic_);
   this->get_parameter("local_plan_topic", local_plan_topic_);
   this->get_parameter("cmd_spin_topic", cmd_spin_topic_);
+  this->get_parameter("yaw_feedback_angle_topic", yaw_feedback_angle_topic_);
   this->get_parameter("input_cmd_vel_topic", input_cmd_vel_topic_);
   this->get_parameter("output_cmd_vel_topic", output_cmd_vel_topic_);
   this->get_parameter("reset_yaw_service_name", reset_yaw_service_name_);
@@ -57,6 +66,11 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
 
   cmd_spin_sub_ = this->create_subscription<example_interfaces::msg::Float32>(
     cmd_spin_topic_, 1, std::bind(&FakeVelTransform::cmdSpinCallback, this, std::placeholders::_1));
+  if (!yaw_feedback_angle_topic_.empty()) {
+    yaw_feedback_angle_sub_ = this->create_subscription<wdr_msgs::msg::NavSend>(
+      yaw_feedback_angle_topic_, 1,
+      std::bind(&FakeVelTransform::yawFeedbackAngleCallback, this, std::placeholders::_1));
+  }
   cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
     input_cmd_vel_topic_, 10,
     std::bind(&FakeVelTransform::cmdVelCallback, this, std::placeholders::_1));
@@ -104,11 +118,20 @@ void FakeVelTransform::cmdSpinCallback(const example_interfaces::msg::Float32::S
   spin_speed_ = msg->data;
 }
 
+void FakeVelTransform::yawFeedbackAngleCallback(const wdr_msgs::msg::NavSend::SharedPtr msg)
+{
+  latest_yaw_feedback_angle_ = normalizeAngle(msg->big_yaw);
+  has_yaw_feedback_angle_ = true;
+  tryAutoZeroCalibration();
+}
+
 void FakeVelTransform::odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr & msg)
 {
   // NOTE: Haven't synced with local_plan
   if ((rclcpp::Clock().now() - last_controller_activate_time_).seconds() > CONTROLLER_TIMEOUT) {
     current_robot_base_angle_ = tf2::getYaw(msg->pose.pose.orientation);
+    has_robot_base_angle_ = true;
+    tryAutoZeroCalibration();
   }
 }
 
@@ -122,7 +145,7 @@ void FakeVelTransform::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr
     is_zero_vel ||
     (rclcpp::Clock().now() - last_controller_activate_time_).seconds() > CONTROLLER_TIMEOUT) {
     // If received velocity cannot be synchronized, transform and cache it directly
-    latest_aft_tf_vel_ = transformVelocity(msg, current_robot_base_angle_);
+    latest_aft_tf_vel_ = transformVelocity(msg, getCalibratedRobotBaseAngle());
     last_cmd_vel_update_time_ = this->now();
   } else {
     latest_cmd_vel_ = msg;
@@ -149,7 +172,9 @@ void FakeVelTransform::syncCallback(
   }
 
   current_robot_base_angle_ = tf2::getYaw(odom_msg->pose.pose.orientation);
-  float yaw_diff = current_robot_base_angle_;
+  has_robot_base_angle_ = true;
+  tryAutoZeroCalibration();
+  float yaw_diff = getCalibratedRobotBaseAngle();
   latest_aft_tf_vel_ = transformVelocity(current_cmd_vel, yaw_diff);
   last_cmd_vel_update_time_ = this->now();
 }
@@ -162,7 +187,7 @@ void FakeVelTransform::publishCmdVel()
   if (last_cmd_vel_update_time_.nanoseconds() == 0) {
     geometry_msgs::msg::Twist zero;
     // 保持原有接口语义：linear.z 用于透传 fake_cumulative_yaw_
-    zero.linear.z = fake_cumulative_yaw_;
+    zero.linear.z = normalizeAngle(fake_cumulative_yaw_);
     cmd_vel_chassis_pub_->publish(zero);
     return;
   }
@@ -172,7 +197,7 @@ void FakeVelTransform::publishCmdVel()
     latest_aft_tf_vel_.linear.x = 0.0;
     latest_aft_tf_vel_.linear.y = 0.0;
   }
-  latest_aft_tf_vel_.linear.z = fake_cumulative_yaw_;
+  latest_aft_tf_vel_.linear.z = normalizeAngle(fake_cumulative_yaw_);
   cmd_vel_chassis_pub_->publish(latest_aft_tf_vel_);
 }
 
@@ -198,7 +223,7 @@ void FakeVelTransform::publishTransform()
   if (dt > 0 && dt < 0.5) {
     fake_cumulative_yaw_ += cmd_omega * dt;
     // 规范化角度到 -PI ~ PI (可选，但推荐)
-    fake_cumulative_yaw_ = atan2(sin(fake_cumulative_yaw_), cos(fake_cumulative_yaw_));
+    fake_cumulative_yaw_ = normalizeAngle(fake_cumulative_yaw_);
   }
 
   geometry_msgs::msg::TransformStamped t;
@@ -210,7 +235,7 @@ void FakeVelTransform::publishTransform()
   // 原逻辑：Fake = 0  =>  TF = -Real
   // 新逻辑：Fake = Virtual =>  Real + TF = Virtual  =>  TF = Virtual - Real
   // 也就是说，Fake 坐标系相对于 Real 坐标系的旋转量
-  double tf_yaw = fake_cumulative_yaw_ - current_robot_base_angle_;
+  double tf_yaw = fake_cumulative_yaw_ - getCalibratedRobotBaseAngle();
 
   tf2::Quaternion q;
   q.setRPY(0, 0, tf_yaw);
@@ -242,11 +267,34 @@ void FakeVelTransform::resetYawCallback(
   const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
-  fake_cumulative_yaw_ = current_robot_base_angle_;
+  fake_cumulative_yaw_ = getCalibratedRobotBaseAngle();
   last_integration_time_ = this->now();
   response->success = true;
-  response->message = "fake_cumulative_yaw_ reset to current robot base angle";
-  RCLCPP_INFO(get_logger(), "Reset fake_cumulative_yaw_ to current robot base angle");
+  response->message = "fake_cumulative_yaw_ reset to calibrated robot base angle";
+  RCLCPP_INFO(get_logger(), "Reset fake_cumulative_yaw_ to calibrated robot base angle");
+}
+
+double FakeVelTransform::getCalibratedRobotBaseAngle() const
+{
+  return normalizeAngle(current_robot_base_angle_ + robot_base_angle_compensation_);
+}
+
+void FakeVelTransform::tryAutoZeroCalibration()
+{
+  if (auto_zero_calibrated_ || !has_robot_base_angle_ || !has_yaw_feedback_angle_) {
+    return;
+  }
+
+  robot_base_angle_compensation_ =
+    normalizeAngle(latest_yaw_feedback_angle_ - current_robot_base_angle_);
+  fake_cumulative_yaw_ = latest_yaw_feedback_angle_;
+  last_integration_time_ = this->now();
+  auto_zero_calibrated_ = true;
+
+  RCLCPP_INFO(
+    get_logger(),
+    "Auto zero calibrated: yaw_feedback=%.6f, robot_base=%.6f, compensation=%.6f",
+    latest_yaw_feedback_angle_, current_robot_base_angle_, robot_base_angle_compensation_);
 }
 
 }  // namespace fake_vel_transform

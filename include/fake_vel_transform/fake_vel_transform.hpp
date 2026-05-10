@@ -29,6 +29,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
+#include "wdr_msgs/msg/nav_send.hpp"
 
 namespace fake_vel_transform
 {
@@ -45,6 +46,7 @@ private:
   void localPlanCallback(const nav_msgs::msg::Path::ConstSharedPtr & msg);
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void cmdSpinCallback(example_interfaces::msg::Float32::SharedPtr msg);
+  void yawFeedbackAngleCallback(const wdr_msgs::msg::NavSend::SharedPtr msg);
   void publishTransform();
   void publishCmdVel();
   void resetYawCallback(
@@ -52,9 +54,12 @@ private:
     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
   geometry_msgs::msg::Twist transformVelocity(
     const geometry_msgs::msg::Twist::SharedPtr & twist, float yaw_diff);
+  double getCalibratedRobotBaseAngle() const;
+  void tryAutoZeroCalibration();
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<example_interfaces::msg::Float32>::SharedPtr cmd_spin_sub_;
+  rclcpp::Subscription<wdr_msgs::msg::NavSend>::SharedPtr yaw_feedback_angle_sub_;
 
   message_filters::Subscriber<nav_msgs::msg::Odometry> odom_sub_filter_;
   message_filters::Subscriber<nav_msgs::msg::Path> local_plan_sub_filter_;
@@ -75,6 +80,7 @@ private:
   std::string odom_topic_;
   std::string local_plan_topic_;
   std::string cmd_spin_topic_;
+  std::string yaw_feedback_angle_topic_;
   std::string input_cmd_vel_topic_;
   std::string output_cmd_vel_topic_;
   std::string reset_yaw_service_name_;
@@ -84,8 +90,13 @@ private:
   std::mutex cmd_vel_mutex_;
   geometry_msgs::msg::Twist::SharedPtr latest_cmd_vel_;
   geometry_msgs::msg::Twist latest_aft_tf_vel_;
-  double current_robot_base_angle_;
+  double current_robot_base_angle_ = 0.0;
+  double robot_base_angle_compensation_ = 0.0;
+  double latest_yaw_feedback_angle_ = 0.0;
   double fake_cumulative_yaw_ = 0.0;    // 存储 Fake 坐标系的当前累积角度
+  bool has_robot_base_angle_ = false;
+  bool has_yaw_feedback_angle_ = false;
+  bool auto_zero_calibrated_ = false;
   rclcpp::Time last_integration_time_;  // 上次积分(激活)的时间点
   rclcpp::Time last_controller_activate_time_;
   rclcpp::Time last_cmd_vel_update_time_;

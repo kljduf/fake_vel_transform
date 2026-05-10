@@ -18,6 +18,7 @@ Related issue: [Switch from Twist to TwistStamped for cmd_vel #1594](https://git
 * `local_plan_topic` (`nav_msgs/msg/Path`) - 局部路径规划器的路径
 * `odom_topic` (`nav_msgs/msg/Odometry`) - 里程计数据
 * `cmd_spin_topic` (`example_interfaces/msg/Float32`) - 控制底盘固定旋转速度，将会叠加到 `output_cmd_vel_topic` 中
+* `yaw_feedback_angle_topic` (`wdr_msgs/msg/NavSend`) - 云台反馈话题（默认 `/target`），读取 `big_yaw`（单位 rad）用于自动校准 `robot_base_frame` 的零角度补偿
 
 ## Parameters
 
@@ -26,6 +27,7 @@ Related issue: [Switch from Twist to TwistStamped for cmd_vel #1594](https://git
 * `fake_robot_base_frame` (`string`, default: "gimbal_link_fake") - 伪速度参考坐标系
 * `local_plan_topic` (`string`, default: "local_plan") - 局部路径规划器的路径话题
 * `cmd_spin_topic` (`string`, default: "cmd_spin") - 控制底盘固定旋转速度的话题
+* `yaw_feedback_angle_topic` (`string`, default: "/target") - 云台反馈角度话题。首次同时收到该话题和 `odom_topic` 后，会自动计算 `robot_base_frame` 到云台角度零位的补偿值；设置为空字符串可禁用自动校准
 * `input_cmd_vel_topic` (`string`, default: "") - 输入速度指令的话题
 * `output_cmd_vel_topic` (`string`, default: "") - 输出速度指令的话题。将原本基于 `fake_robot_base_frame` 的速度变换到 `robot_base_frame` 后发布
 * `init_spin_speed` (`double`, default: 0.0) - 若没有接收 `cmd_spin_topic`，则使用该值作为固定旋转速度
